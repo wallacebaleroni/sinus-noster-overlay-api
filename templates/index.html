@@ -1,10 +1,11 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
+    <title>Sinus Noster - Overlay</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Ubuntu:wght@400;700&display=swap');
 
@@ -19,6 +20,52 @@
             position: relative;
             overflow: hidden;
             -webkit-font-smoothing: antialiased;
+        }
+
+        /* Modo preview: ativado por ?preview=1 na URL. No OBS a URL não tem
+           esse parâmetro, então o fundo continua transparente. */
+        body.preview {
+            background: radial-gradient(circle at 30% 20%, #1e293b 0%, #0b1220 70%);
+        }
+
+        body.preview::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            outline: 2px dashed rgba(255, 255, 255, 0.15);
+            outline-offset: -12px;
+            pointer-events: none;
+        }
+
+        body.preview::after {
+            content: 'PREVIEW · fundo fake, não aparece no OBS';
+            position: absolute;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 14px;
+            letter-spacing: 2px;
+            color: rgba(255, 255, 255, 0.35);
+            text-transform: uppercase;
+        }
+
+        .location-banner {
+            position: absolute;
+            top: 40px;
+            left: 130px;
+            font-size: 22px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: #ffffff;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+        }
+
+        .location-banner .label {
+            color: #a0aec0;
+            font-weight: 400;
+            margin-right: 10px;
+            text-transform: uppercase;
+            font-size: 16px;
         }
 
         .vel-value {
@@ -58,10 +105,10 @@
             letter-spacing: 0.5px;
         }
 
-        .rodape-dados span {
+        .rodape-dados span.label {
             color: #a0aec0;
             font-weight: 400;
-            margin-right: 18px;
+            margin-right: 8px;
         }
 
         .lat-lon,
@@ -76,48 +123,74 @@
             right: 90px;
             bottom: 90px;
             text-align: right;
-            width: 520px;
+            width: 560px;
         }
 
         .info-line {
-            margin-bottom: 12px;
+            margin-bottom: 10px;
             font-weight: 700;
         }
 
-        .info-line span.label {
+        .info-line .label {
             display: inline-block;
-            min-width: 160px;
+            min-width: 170px;
             color: #a0aec0;
             text-transform: uppercase;
             font-size: 18px;
+            font-weight: 700;
         }
 
-        .info-line span.value {
-            font-size: 28px;
-        }
-
-        .info-line.small span.value {
-            font-size: 24px;
-        }
-
-        .wind-direction {
+        .info-line .value {
             font-size: 26px;
+        }
+
+        .info-line.small .value {
+            font-size: 22px;
+        }
+
+        .info-line .aux {
+            font-size: 20px;
+            color: #cbd5e0;
+            margin-left: 6px;
+        }
+
+        .top-right {
+            position: absolute;
+            top: 40px;
+            right: 90px;
+            text-align: right;
+            width: 420px;
+            font-size: 20px;
+            font-weight: 700;
             color: #ffffff;
+        }
+
+        .top-right .row {
+            margin-bottom: 6px;
+        }
+
+        .top-right .label {
+            color: #a0aec0;
+            font-weight: 400;
+            margin-right: 8px;
+            text-transform: uppercase;
+            font-size: 16px;
         }
     </style>
     <script>
-        function formatValue(value, unit) {
+        function fmt(value, unit, digits) {
             if (value === null || value === undefined || Number.isNaN(value)) {
                 return '--';
             }
-            return `${value}${unit}`;
+            const number = typeof value === 'number' ? value : Number(value);
+            if (Number.isNaN(number)) return '--';
+            const fixed = typeof digits === 'number' ? number.toFixed(digits) : number;
+            return `${fixed}${unit || ''}`;
         }
 
-        function cardinalFromDegrees(deg) {
-            if (deg === null || deg === undefined || Number.isNaN(deg)) {
-                return '--';
-            }
-            const value = deg % 360;
+        function cardinal(deg) {
+            if (deg === null || deg === undefined || Number.isNaN(deg)) return '--';
+            const value = ((Number(deg) % 360) + 360) % 360;
             if (value <= 22.5 || value > 337.5) return 'N';
             if (value <= 67.5) return 'NE';
             if (value <= 112.5) return 'E';
@@ -128,50 +201,123 @@
             return 'NW';
         }
 
+        function formatIsoTime(iso) {
+            if (!iso) return '--';
+            const date = new Date(iso);
+            if (Number.isNaN(date.getTime())) return '--';
+            return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function setText(id, text) {
+            const el = document.getElementById(id);
+            if (el) el.innerText = text;
+        }
+
+        function setHtml(id, html) {
+            const el = document.getElementById(id);
+            if (el) el.innerHTML = html;
+        }
+
         async function atualizarDados() {
             try {
                 const response = await fetch(`/live-data?t=${Date.now()}`);
-                const dados = await response.json();
+                const d = await response.json();
 
-                document.getElementById('vel').innerText = formatValue(dados.speed, ' kn');
-                document.getElementById('rumo').innerText = formatValue(dados.bearing, '°');
-                document.getElementById('rumodir').innerText = cardinalFromDegrees(dados.bearing);
-                document.getElementById('latlon').innerHTML = `<span>LAT:</span> ${dados.latitude_dms} | <span>LON:</span> ${dados.longitude_dms}`;
-                document.getElementById('position-decimal').innerHTML = `<span>POSIÇÃO:</span> ${dados.position_decimal}`;
-                document.getElementById('wind-speed').innerText = formatValue(dados.wind_speed, ' m/s');
-                document.getElementById('wind-direction').innerText = formatValue(dados.wind_direction, '°');
-                document.getElementById('wind-cardinal').innerText = cardinalFromDegrees(dados.wind_direction);
-                document.getElementById('tide-state').innerText = (dados.tide_state || 'unknown').toUpperCase();
-                document.getElementById('tide-height').innerText = formatValue(dados.tide_height, ' m');
-                document.getElementById('depth').innerText = formatValue(dados.depth, ' m');
-                document.getElementById('water-temp').innerText = formatValue(dados.water_temperature, '°C');
-                document.getElementById('timestamp').innerText = dados.last_update ? `Atualizado: ${dados.last_update}` : 'Atualizado: --';
+                setText('vel', fmt(d.speed, ' kn', 1));
+                setText('rumo', fmt(d.bearing, '°', 0));
+                setText('rumodir', cardinal(d.bearing));
+
+                setHtml('latlon', `<span class="label">LAT</span>${d.latitude_dms || '--'} <span class="label">LON</span>${d.longitude_dms || '--'}`);
+                setHtml('position-decimal', `<span class="label">POSIÇÃO</span>${d.position_decimal || '--'}`);
+                setText('timestamp', d.last_update ? `Atualizado ${formatIsoTime(d.last_update)}` : 'Atualizado --');
+
+                setText('wind-speed', fmt(d.wind_speed, ' kn', 1));
+                setText('wind-gust', d.wind_gust !== null && d.wind_gust !== undefined ? `rajada ${fmt(d.wind_gust, ' kn', 1)}` : '');
+                setText('wind-direction', fmt(d.wind_direction, '°', 0));
+                setText('wind-cardinal', cardinal(d.wind_direction));
+
+                setText('wave', fmt(d.wave_height, ' m', 1));
+                setText('wave-period', d.wave_period !== null && d.wave_period !== undefined ? `${fmt(d.wave_period, ' s', 0)}` : '');
+
+                setText('tide-state', (d.tide_state || 'unknown').toUpperCase());
+                setText('tide-height', fmt(d.tide_height, ' m', 2));
+                setText('depth', fmt(d.depth, ' m', 1));
+                setText('water-temp', fmt(d.water_temperature, '°C', 1));
+
+                setHtml('location', d.location_name ? `<span class="label">LOCAL</span>${d.location_name}` : '');
+
+                setHtml('air-temp', `<span class="label">AR</span>${fmt(d.air_temperature, '°C', 1)}`);
+                setHtml('pressure', `<span class="label">PRESSÃO</span>${fmt(d.pressure, ' hPa', 0)}`);
+                setHtml('sunrise', `<span class="label">NASCER</span>${formatIsoTime(d.sunrise)}`);
+                setHtml('sunset', `<span class="label">PÔR</span>${formatIsoTime(d.sunset)}`);
             } catch (e) {
                 console.log('Erro ao buscar dados', e);
             }
         }
 
+        function applyPreviewMode() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('preview') || params.has('test')) {
+                document.body.classList.add('preview');
+            }
+        }
+
         setInterval(atualizarDados, 1000);
-        window.addEventListener('load', atualizarDados);
+        window.addEventListener('load', () => {
+            applyPreviewMode();
+            atualizarDados();
+        });
     </script>
 </head>
 <body>
+    <div class="location-banner" id="location"></div>
+
+    <div class="top-right">
+        <div class="row" id="air-temp"></div>
+        <div class="row" id="pressure"></div>
+        <div class="row" id="sunrise"></div>
+        <div class="row" id="sunset"></div>
+    </div>
+
     <div class="vel-value" id="vel">0.0 kn</div>
     <div class="rumo-value" id="rumo">0°</div>
     <div class="rumo-dir" id="rumodir">N</div>
 
     <div class="rodape-dados">
-        <span class="lat-lon" id="latlon"><span>LAT:</span> 00°00'00"S | <span>LON:</span> 00°00'00"W</span>
-        <span class="position-decimal" id="position-decimal"><span>POSIÇÃO:</span> 0.000000, 0.000000</span>
-        <span class="timestamp" id="timestamp">Atualizado: --</span>
+        <span class="lat-lon" id="latlon"><span class="label">LAT</span>00°00'00"S <span class="label">LON</span>00°00'00"W</span>
+        <span class="position-decimal" id="position-decimal"><span class="label">POSIÇÃO</span>0.000000, 0.000000</span>
+        <span class="timestamp" id="timestamp">Atualizado --</span>
     </div>
 
     <div class="info-box">
-        <div class="info-line"><span class="label">Vento</span><span class="value" id="wind-speed">-- m/s</span></div>
-        <div class="info-line"><span class="label">Direção</span><span class="value" id="wind-direction">--°</span> <span class="wind-direction" id="wind-cardinal">--</span></div>
-        <div class="info-line"><span class="label">Maré</span><span class="value" id="tide-state">UNKNOWN</span> <span class="value" id="tide-height">-- m</span></div>
-        <div class="info-line"><span class="label">Profundidade</span><span class="value" id="depth">-- m</span></div>
-        <div class="info-line small"><span class="label">Temperatura água</span><span class="value" id="water-temp">--°C</span></div>
+        <div class="info-line">
+            <span class="label">Vento</span>
+            <span class="value" id="wind-speed">-- kn</span>
+            <span class="aux" id="wind-gust"></span>
+        </div>
+        <div class="info-line">
+            <span class="label">Direção</span>
+            <span class="value" id="wind-direction">--°</span>
+            <span class="aux" id="wind-cardinal">--</span>
+        </div>
+        <div class="info-line">
+            <span class="label">Ondas</span>
+            <span class="value" id="wave">-- m</span>
+            <span class="aux" id="wave-period"></span>
+        </div>
+        <div class="info-line">
+            <span class="label">Maré</span>
+            <span class="value" id="tide-state">UNKNOWN</span>
+            <span class="value" id="tide-height">-- m</span>
+        </div>
+        <div class="info-line">
+            <span class="label">Profundidade</span>
+            <span class="value" id="depth">-- m</span>
+        </div>
+        <div class="info-line small">
+            <span class="label">Temperatura água</span>
+            <span class="value" id="water-temp">--°C</span>
+        </div>
     </div>
 </body>
 </html>

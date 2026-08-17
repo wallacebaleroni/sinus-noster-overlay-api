@@ -1,61 +1,51 @@
-# Sinus Noster API
+# Sinus Noster Overlay
 
-Aplicação web em Python para receber, processar e exibir dados em tempo real de navegação e condições marítimas. A API foi pensada para funcionar como backend de um painel de monitoramento de embarcação, integrando informações de GPS, bússola, aceleração e dados meteorológicos/ambientais diretamente em uma interface web.
+Overlay web em tempo real para navegação de embarcação, pensado para ser capturado por uma cena do OBS em livestream. Recebe telemetria do sensor (GPS, bússola, acelerômetro) via HTTP, agrega dados meteorológicos, oceanográficos, batimétricos e de localização de APIs públicas e renderiza tudo em uma tela 1920×1080 pronta pra transmissão.
+
+Internamente o projeto tem três camadas: uma API HTTP (`POST /data`, `GET /live-data`), um worker de agregação em background e a página do overlay (`GET /`). O produto final é o overlay — os dois primeiros existem pra alimentá-lo.
 
 ## Contexto
 
-A ideia desta aplicação é centralizar dados vindos de sensores ou dispositivos embarcados e transformá-los em informações úteis para navegação, observação de maré, vento, profundidade e posição. Em um cenário real, o dashboard é usado como fonte visual para uma transmissão ao vivo em OBS (Open Broadcaster Software), onde as informações são exibidas em tela como parte de um livestream.
-
-Isso é especialmente útil quando o objetivo é "popular" uma cena do OBS com dados de embarcação em tempo real, como:
+A ideia é centralizar dados vindos de sensores/dispositivos embarcados e transformá-los em informação útil para navegação, observação de maré, vento, ondas, profundidade e posição. Em uso real, o dashboard vira fonte visual de uma transmissão ao vivo em OBS, exibindo em tela:
 
 - velocidade, rumo e localização em tempo real;
-- estado da maré e condições ambientais;
-- dados de vento, profundidade e temperatura da água;
-- indicadores para uma tela de monitoramento em transmissão ao vivo;
-- exibição contínua de status para streams, vídeos de navegação ou conteúdo de mar/obs.
+- estado da maré e nível do mar;
+- vento (velocidade, direção, rajada), pressão e temperatura do ar;
+- ondas (altura, período, direção) e correntes marítimas;
+- profundidade batimétrica e temperatura da água;
+- localização (cidade/costa mais próxima);
+- nascer e pôr do sol.
 
-A aplicação expõe um endpoint para receber dados em JSON e outro endpoint para fornecer os dados já processados para a interface, que foi pensada para ser facilmente consumida por uma cena do OBS.
-
----
-
-## Como funciona
-
-A lógica principal está em `app.py`:
-
-1. A aplicação inicia um servidor Flask.
-2. Um cliente externo envia um payload JSON para o endpoint `/data` via `POST`.
-3. O backend extrai os valores de:
-   - `location`
-   - `accelerometer`
-   - `compass`
-4. Os dados são convertidos em informações mais legíveis:
-   - velocidade em nós;
-   - rumo em graus;
-   - latitude e longitude em graus/minutos/segundos;
-   - posição decimal formatada;
-   - aceleração vertical;
-5. Se a posição não for nula, o sistema busca dados externos de clima e mar:
-   - temperatura da água;
-   - altura da maré;
-   - estado da maré (subindo/descendo);
-   - velocidade do vento;
-   - direção do vento;
-   - profundidade.
-6. A interface renderiza esses dados em `/`, consumindo `/live-data` em tempo real com `fetch()` no navegador.
-
-A aplicação usa `Flask`, `flask-cors` e renderização de template HTML em `templates/index.html`. A estrutura visual foi pensada para ser legível, estável e com atualização em tempo real, para que o navegador da cena do OBS mostre esses dados de forma contínua durante a transmissão.
+O sensor envia dados via `POST /data`, o backend consulta um conjunto de APIs externas em background e o overlay em `/` consome `GET /live-data` de segundo em segundo.
 
 ---
 
-## Funcionalidades
+## APIs externas integradas
 
-### 1. Recebimento de sensores
+Todas as integrações são gratuitas e sem chave. As respostas são cacheadas por coordenada para respeitar rate limits.
 
-Endpoint:
+| Fonte | Endpoint | Dados |
+|---|---|---|
+| Open-Meteo Forecast | `https://api.open-meteo.com/v1/forecast` | Vento (velocidade em nós, direção, rajada), temperatura do ar, pressão, precipitação, cobertura de nuvens, sunrise/sunset |
+| Open-Meteo Marine | `https://marine-api.open-meteo.com/v1/marine` | Altura/direção/período de onda, temperatura da água (SST), nível do mar (`sea_level_height_msl`, base da maré), velocidade/direção de corrente |
+| OpenTopoData GEBCO 2020 | `https://api.opentopodata.org/v1/gebco2020` | Batimetria (profundidade em metros derivada da elevação) |
+| Nominatim OSM | `https://nominatim.openstreetmap.org/reverse` | Reverse geocoding — nome da cidade/costa/oceano próximo |
 
-- `POST /data`
+Notas de uso:
 
-Esse endpoint aceita um JSON com estrutura semelhante a:
+- **Open-Meteo**: não exige chave, forecast horário. Se rodar muitas instâncias, avalie subir uma cópia self-hosted.
+- **OpenTopoData público**: 1 req/s e 1000 req/dia. Para embarcação em movimento, o cache por coordenada arredondada (~1 km) já resolve na prática.
+- **Nominatim público**: exige `User-Agent` identificável (configure `NOMINATIM_USER_AGENT` no `.env`) e limite de 1 req/s. Use responsavelmente.
+
+Estado da maré é derivado da série `sea_level_height_msl`: comparando a hora atual com a próxima, classificamos em `rising`, `falling` ou `steady`.
+
+---
+
+## Endpoints da aplicação
+
+### `POST /data`
+
+Recebe payload do sensor:
 
 ```json
 {
@@ -67,63 +57,71 @@ Esse endpoint aceita um JSON com estrutura semelhante a:
 }
 ```
 
-A partir disso, a API calcula e salva os dados em `sensor_data`.
+A resposta é imediata (`200 OK`); as consultas externas rodam em thread separada, disparadas pela última posição válida recebida.
 
-### 2. Dashboard em tempo real
+### `GET /live-data`
 
-Endpoint:
+Retorna o estado consolidado em JSON:
 
-- `GET /live-data`
+```json
+{
+  "speed": 6.8,
+  "bearing": 120,
+  "latitude": -23.501,
+  "longitude": -46.302,
+  "latitude_dms": "23°30'03\"S",
+  "longitude_dms": "46°18'07\"W",
+  "position_decimal": "-23.501000, -46.302000",
+  "vertical_acceleration": 0.75,
+  "water_temperature": 22.4,
+  "tide_height": 0.42,
+  "tide_state": "rising",
+  "wind_speed": 8.2,
+  "wind_gust": 12.1,
+  "wind_direction": 145,
+  "wave_height": 1.1,
+  "wave_period": 7,
+  "wave_direction": 170,
+  "current_speed": 0.2,
+  "current_direction": 90,
+  "air_temperature": 24.1,
+  "pressure": 1015,
+  "precipitation": 0.0,
+  "cloud_cover": 40,
+  "sunrise": "2026-08-17T09:12",
+  "sunset": "2026-08-17T20:41",
+  "depth": 34.7,
+  "location_name": "Santos",
+  "location_full": "Santos, São Paulo, Brasil",
+  "last_update": "2026-08-17T17:08:00+00:00",
+  "last_external_update": "2026-08-17T17:07:12+00:00"
+}
+```
 
-Retorna os dados digestados em formato JSON, prontos para atualização automática da interface.
+### `GET /`
 
-### 3. Conversão de coordenadas
-
-A aplicação converte coordenadas decimais em formato DMS, por exemplo:
-
-- `23°12'00"S`
-- `46°42'15"W`
-
-Também mostra a posição em formato decimal.
-
-### 4. Dados ambientais e marítimos
-
-Ao receber uma localização válida, a API consulta serviços externos para complementar o painel com:
-
-- temperatura da água;
-- altura da maré;
-- estado da maré (`rising`, `falling`, `steady`, `unknown`);
-- direção e velocidade do vento;
-- profundidade da água.
-
-### 5. Interface visual para OBS e livestream
-
-A página em `templates/index.html` foi desenhada para funcionar como uma tela de dados de transmissão ao vivo, exibindo:
-
-- velocidade em nós;
-- rumo em graus;
-- direção cardeal (N, NE, E, etc.);
-- latitude e longitude;
-- posição decimal;
-- vento e direção do vento;
-- maré e profundidade;
-- temperatura da água;
-- horário da última atualização.
-
-Como ela é atualizada automaticamente via `fetch()` em um intervalo de 1 segundo, ela se adapta bem ao uso em uma cena do OBS, onde a janela do navegador pode ser capturada diretamente como fonte de imagem da live.
+Renderiza `templates/index.html`, o overlay 1920×1080 pensado pra ser capturado no OBS.
 
 ---
 
 ## Estrutura do projeto
 
 ```text
-API/
-├── app.py
+sinus-noster-overlay/
+├── app.py                  # Flask, rotas, thread de refresh em background
+├── sensors.py              # Parsing do payload + conversões (nós, DMS, cardeal)
+├── integrations/
+│   ├── __init__.py
+│   ├── http.py             # Session requests com retry + cache por coordenada
+│   ├── openmeteo.py        # Forecast + Marine
+│   ├── bathymetry.py       # OpenTopoData GEBCO 2020
+│   └── geocoding.py        # Nominatim reverse
 ├── templates/
-│   └── index.html
+│   └── index.html          # Overlay do OBS
+├── requirements.txt
+├── .env.example
 ├── .gitignore
-├── README.md
-└── .venv/   # ambiente virtual local (se existir)
+└── README.md
 ```
 
 ---
@@ -131,14 +129,13 @@ API/
 ## Requisitos
 
 - Python 3.9+
-- Flask
-- Flask-CORS
+- Dependências em `requirements.txt` (Flask, Flask-CORS, requests)
 
 ---
 
 ## Como rodar localmente
 
-### 1. Crie um ambiente virtual
+### 1. Ambiente virtual
 
 Windows (PowerShell):
 
@@ -157,65 +154,65 @@ source .venv/bin/activate
 ### 2. Instale as dependências
 
 ```bash
-pip install flask flask-cors
+pip install -r requirements.txt
 ```
 
-### 3. Inicie a aplicação
+### 3. Configure as variáveis
+
+```bash
+cp .env.example .env
+```
+
+Ajuste pelo menos `NOMINATIM_USER_AGENT` com um contato real (política do Nominatim).
+
+### 4. Rode
 
 ```bash
 python app.py
 ```
 
-A aplicação ficará disponível em:
-
-- `http://localhost:5000`
+Overlay em `http://localhost:5000`.
 
 ---
 
 ## Variáveis de ambiente
 
-A aplicação aceita algumas variáveis de ambiente para configurar integrações externas:
-
-```bash
-EXTERNAL_DATA_REFRESH_INTERVAL_SECONDS=60
-OPEN_METEO_BASE_URL=https://marine-api.open-meteo.com/v1/marine
-OPEN_METEO_ENABLED=1
-DEPTH_API_URL=
-DEPTH_API_KEY=
-STARTUP_API_URL=
-STARTUP_API_METHOD=GET
-STARTUP_API_BODY=
-```
-
-### O que cada uma faz
-
-- `EXTERNAL_DATA_REFRESH_INTERVAL_SECONDS`: intervalo de atualização do cache dos dados externos.
-- `OPEN_METEO_BASE_URL`: base da API de dados marítimos.
-- `OPEN_METEO_ENABLED`: ativa ou desativa a consulta ao Open-Meteo.
-- `DEPTH_API_URL`: endpoint para profundidade.
-- `DEPTH_API_KEY`: chave opcional para a API de profundidade.
-- `STARTUP_API_URL`: chamada opcional realizada na inicialização.
-- `STARTUP_API_METHOD` e `STARTUP_API_BODY`: método e payload para a chamada de startup.
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `EXTERNAL_DATA_REFRESH_INTERVAL_SECONDS` | `60` | Intervalo do refresh em background das APIs externas |
+| `POSITION_CACHE_TOLERANCE_DEG` | `0.01` | Tolerância (em graus) para invalidar cache por posição (~1 km) |
+| `EXTERNAL_HTTP_TIMEOUT_SECONDS` | `8` | Timeout global das requisições HTTP |
+| `OPEN_METEO_FORECAST_URL` | Open-Meteo | URL base do endpoint Forecast |
+| `OPEN_METEO_FORECAST_ENABLED` | `1` | Liga/desliga a integração |
+| `OPEN_METEO_MARINE_URL` | Open-Meteo Marine | URL base do endpoint Marine |
+| `OPEN_METEO_MARINE_ENABLED` | `1` | Liga/desliga a integração |
+| `OPENTOPODATA_URL` | GEBCO 2020 | URL base para batimetria |
+| `OPENTOPODATA_ENABLED` | `1` | Liga/desliga a integração |
+| `NOMINATIM_URL` | Nominatim OSM | URL base do reverse geocoding |
+| `NOMINATIM_ENABLED` | `1` | Liga/desliga a integração |
+| `NOMINATIM_USER_AGENT` | placeholder | User-Agent obrigatório para Nominatim — coloque um contato real |
+| `PORT` | `5000` | Porta HTTP do Flask |
+| `FLASK_DEBUG` | `0` | Ativa modo debug do Flask |
 
 ---
 
 ## Exemplo de uso
 
-### Enviando dados para a API
+Enviando dados:
 
 ```bash
 curl -X POST http://localhost:5000/data \
   -H "Content-Type: application/json" \
   -d '{
     "payload": [
-      {"name": "location", "values": {"latitude": -23.5, "longitude": -46.3, "speed": 3.2, "bearing": 120}},
+      {"name": "location", "values": {"latitude": -23.98, "longitude": -46.30, "speed": 3.2, "bearing": 120}},
       {"name": "accelerometer", "values": {"z": 0.7}},
       {"name": "compass", "values": {"magneticBearing": 118}}
     ]
   }'
 ```
 
-### Consultando os dados finais
+Consultando o estado consolidado:
 
 ```bash
 curl http://localhost:5000/live-data
@@ -225,12 +222,13 @@ curl http://localhost:5000/live-data
 
 ## Observações
 
-- O backend define headers de cache desabilitado para evitar stale data na tela.
-- - A aplicação foi pensada para uso em painel de monitoramento e para composição visual em transmissões ao vivo.
-- A interface está pronta para ser usada como dashboard em tela ampla, projeto visual de navegação ou fonte de captura do OBS em livestream.
+- O `POST /data` **não** aguarda respostas externas. Ele apenas registra a última posição e sinaliza a thread de refresh, que atualiza o estado global respeitando o intervalo configurado. Isso evita que uma API lenta atrase a atualização de GPS/rumo no overlay.
+- Todo o estado compartilhado passa por `state_lock` (`threading.Lock`) — Flask em modo dev usa múltiplas threads e o refresh também roda paralelo.
+- As respostas incluem headers de cache desabilitado, para que o navegador do OBS nunca segure dado velho.
+- Se rodar atrás de um proxy/gateway, garanta que ele não bufferize a resposta do `/live-data`.
 
 ---
 
 ## Licença
 
-Este projeto não especifica licença no momento. Se for um projeto interno ou pessoal, a utilização pode ser ajustada conforme a necessidade do responsável.
+Este projeto não especifica licença no momento.
